@@ -16,6 +16,23 @@
 //  Bar thickness is detected automatically from the video aspect ratio, so
 //  4:3 anime and 2.35:1 movies both work with zero tuning.
 //
+//  How the light is built (two passes):
+//    1. A tiny 4096x1 texture ("light profile") is rendered with a very dense
+//       sample grid (hundreds of taps per profile pixel). It stores one smooth
+//       colour per position along each of the four picture edges.
+//    2. The bars are filled by sampling that profile with linear filtering.
+//       The result is a perfectly smooth gradient with no visible sampling
+//       stripes, no matter how wide the blur is set.
+//
+//  Note: smoothness is not the same as matching the scene. A very wide blur
+//  averages the whole edge into one flat glow, so the bar stops looking like
+//  the picture next to it. Keep ab_h_blur / ab_v_blur around 4-8.
+//
+//  Why the old single-pass version striped: it sampled the video once per
+//  screen pixel with a sparse tap grid, so busy edges (blinds, grass, water)
+//  aliased into regular vertical/horizontal bands. Sampling a dense low-res
+//  profile removes that aliasing completely.
+//
 //  Tuning (no file editing needed):
 //      mpv.conf:   glsl-shader-opts=ab_intensity=1.2,ab_v_blur=8
 //      runtime:    set glsl-shader-opts "ab_intensity=1.2"
@@ -120,21 +137,123 @@
 //!MINIMUM 0.0
 //!MAXIMUM 4.0
 0.0
-//!PARAM ab_blur_samples
-//!DESC Taps along the picture edge, higher = smoother but slower
-//!TYPE DEFINE
-//!MINIMUM 4
-//!MAXIMUM 24
-12
-//!PARAM ab_depth_samples
-//!DESC Rows read into the picture, higher = smoother but slower
-//!TYPE DEFINE
-//!MINIMUM 1
-//!MAXIMUM 8
-4
+//!PARAM ab_profile_taps
+//!DESC Light profile: samples along each edge (higher = smoother)
+//!TYPE float
+//!MINIMUM 16.0
+//!MAXIMUM 256.0
+128.0
+//!PARAM ab_profile_rows
+//!DESC Light profile: rows read into the picture (higher = smoother)
+//!TYPE float
+//!MINIMUM 1.0
+//!MAXIMUM 12.0
+6.0
 
 //!HOOK OUTPUT
 //!BIND HOOKED
+//!SAVE AB_PROFILE
+//!WIDTH 4096
+//!HEIGHT 1
+//!DESC AmbientBorder light profile
+
+//  Pass 1: build the 4096x1 light profile.
+//  Segment layout along X:  0-1023 top, 1024-2047 bottom,
+//                           2048-3071 left, 3072-4095 right
+
+vec3 abSample(vec2 uv)
+{
+#if ab_linear_blur
+    return linearize(HOOKED_tex(uv)).rgb;
+#else
+    return HOOKED_tex(uv).rgb;
+#endif
+}
+
+vec4 hook()
+{
+    vec2 res = target_size;
+    vec2 src = input_size;
+
+    // --- picture rectangle: contain fit of the source into the window ------
+    float srcAR = ab_source_aspect > 0.0
+                ? ab_source_aspect
+                : (src.x > 1.0 && src.y > 1.0 ? src.x / src.y : res.x / res.y);
+    float dstAR = res.x / res.y;
+
+    vec2 fitSize = (srcAR > dstAR) ? vec2(res.x, res.x / srcAR)
+                                   : vec2(res.y * srcAR, res.y);
+    fitSize = clamp(floor(fitSize + 0.5), vec2(2.0), res);
+    vec2 fitMin = floor((res - fitSize) * 0.5 + 0.5);
+
+    float hBar = clamp(fitMin.y + ab_h_extra * 0.01 * res.y, 0.0, res.y * 0.5 - 1.0);
+    float vBar = clamp(fitMin.x + ab_v_extra * 0.01 * res.x, 0.0, res.x * 0.5 - 1.0);
+
+    // Which edge this profile pixel belongs to, and where along that edge.
+    float fx  = gl_FragCoord.x;            // 0 .. 4096
+    int   edge = int(fx / 1024.0);         // 0 top, 1 bottom, 2 left, 3 right
+    float u   = fract(fx / 1024.0);        // 0 .. 1 along the edge
+
+    vec2  uvEdge;
+    vec2  blurDir;
+    vec2  depthDir;
+    float blurPx;
+    float depthPx;
+
+    if (edge < 2)
+    {
+        float xw = clamp(u * res.x, vBar, res.x - vBar);
+        float yw = (edge == 0) ? hBar : res.y - hBar;
+        blurPx   = ab_h_blur  * 0.01 * res.x;
+        depthPx  = ab_h_depth * 0.01 * res.y;
+        uvEdge   = vec2((xw - fitMin.x) / fitSize.x, (yw - fitMin.y) / fitSize.y);
+        blurDir  = vec2(1.0 / fitSize.x, 0.0);
+        depthDir = vec2(0.0, (edge == 0 ? 1.0 : -1.0) / fitSize.y);
+    }
+    else
+    {
+        float yw = clamp(u * res.y, hBar, res.y - hBar);
+        float xw = (edge == 2) ? vBar : res.x - vBar;
+        blurPx   = ab_v_blur  * 0.01 * res.y;
+        depthPx  = ab_v_depth * 0.01 * res.x;
+        uvEdge   = vec2((xw - fitMin.x) / fitSize.x, (yw - fitMin.y) / fitSize.y);
+        blurDir  = vec2(0.0, 1.0 / fitSize.y);
+        depthDir = vec2((edge == 2 ? 1.0 : -1.0) / fitSize.x, 0.0);
+    }
+
+    int taps = int(ab_profile_taps + 0.5);
+    int rows = int(ab_profile_rows + 0.5);
+
+    vec3 sum = vec3(0.0);
+
+    for (int j = 0; j < rows; ++j)
+    {
+        float d = ((float(j) + 0.5) / float(rows)) * depthPx;
+        vec2 base = uvEdge + depthDir * d;
+
+        for (int i = 0; i < taps; ++i)
+        {
+            float b = ((float(i) + 0.5) / float(taps) - 0.5) * 2.0 * blurPx;
+            vec2 uv = clamp(base + blurDir * b, vec2(0.0), vec2(1.0));
+            sum += abSample(uv);
+        }
+    }
+
+    sum /= float(rows * taps);
+
+#if ab_linear_blur
+    sum = delinearize(vec4(sum, 1.0)).rgb;
+#endif
+
+    return vec4(sum, 1.0);
+}
+
+//=============================================================================
+//  Pass 2: squeeze the picture back and fill the bars from the profile
+//=============================================================================
+//!HOOK OUTPUT
+//!BIND HOOKED
+//!BIND AB_PROFILE
 //!DESC AmbientBorder (ambient light in the letterbox / pillarbox bars)
 
 const vec3 AB_LUMA = vec3(0.2126, 0.7152, 0.0722);
@@ -146,52 +265,16 @@ float abFalloff(float distPx, float barPx, float power)
     return pow(max(1.0 - t, 0.0), max(power, 0.0));
 }
 
-vec3 abSample(vec2 uv)
-{
-#if ab_linear_blur
-    return linearize(HOOKED_tex(uv)).rgb;
-#else
-    return HOOKED_tex(uv).rgb;
-#endif
-}
-
-// Averages a blurred band lying just inside the picture edge.
-//   edgePix  : edge point, sharing the blur-axis coordinate of this pixel
-//   blurAxis : axis the band is smeared along  ((1,0) horizontal, (0,1) vertical)
-//   depthAxis: axis the band reaches into the picture
-//   dir      : +1 / -1, direction into the picture along depthAxis
-//   fitMin/invFit: map window pixels -> picture uv. The hooked texture holds
-//                  the stretched video, so every sample has to go through it.
-vec3 abBand(vec2 edgePix, vec2 blurAxis, vec2 depthAxis, float dir,
-            float blurPx, float depthPx, vec2 lo, vec2 hi,
-            vec2 fitMin, vec2 invFit)
-{
-    vec3 sum = vec3(0.0);
-
-    for (int j = 0; j < ab_depth_samples; ++j)
-    {
-        float d = (float(j) + 0.5) / float(ab_depth_samples) * depthPx;
-        vec2 base = edgePix + depthAxis * (dir * d);
-
-        for (int i = 0; i < ab_blur_samples; ++i)
-        {
-            float b = ((float(i) + 0.5) / float(ab_blur_samples) - 0.5) * 2.0 * blurPx;
-            vec2 p = clamp(base + blurAxis * b, lo, hi);
-            sum += abSample(clamp((p - fitMin) * invFit, 0.0, 1.0));
-        }
-    }
-
-    sum /= float(ab_depth_samples * ab_blur_samples);
-
-#if ab_linear_blur
-    sum = delinearize(vec4(sum, 1.0)).rgb;
-#endif
-    return sum;
-}
-
 float abNoise(vec2 p)
 {
     return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
+}
+
+// Sample one of the four profile segments; seg*1024 selects the segment.
+vec3 abProfile(float u, float seg)
+{
+    float t = clamp(u * 1024.0 - 0.5, 0.0, 1023.0);
+    return AB_PROFILE_tex(vec2((seg * 1024.0 + t + 0.5) / 4096.0, 0.5)).rgb;
 }
 
 vec4 hook()
@@ -231,17 +314,6 @@ vec4 hook()
     if (!inTop && !inBottom && !inLeft && !inRight)
         return vec4(0.0, 0.0, 0.0, 1.0);
 
-    // Bars never feed back into the light: sampling stays inside the picture.
-    vec2 lo = vec2(vBar, hBar) + 0.5;
-    vec2 hi = max(res - vec2(vBar, hBar) - 0.5, lo + 1.0);
-
-    vec2 invFit    = 1.0 / fitSize;
-
-    float hBlurPx  = ab_h_blur  * 0.01 * res.x;
-    float hDepthPx = ab_h_depth * 0.01 * res.y;
-    float vBlurPx  = ab_v_blur  * 0.01 * res.y;
-    float vDepthPx = ab_v_depth * 0.01 * res.x;
-
     vec3  colorSum = vec3(0.0);
     float wSum     = 0.0;
     float bright   = 0.0;
@@ -249,8 +321,7 @@ vec4 hook()
     if (inTop)
     {
         float w = abFalloff(hBar - pix.y, hBar, ab_h_falloff) * ab_h_intensity;
-        colorSum += abBand(vec2(pix.x, hBar), vec2(1.0, 0.0), vec2(0.0, 1.0),  1.0,
-                           hBlurPx, hDepthPx, lo, hi, fitMin, invFit) * w;
+        colorSum += abProfile(pix.x / res.x, 0.0) * w;
         wSum   += w;
         bright  = max(bright, w);
     }
@@ -258,8 +329,7 @@ vec4 hook()
     if (inBottom)
     {
         float w = abFalloff(pix.y - (res.y - hBar), hBar, ab_h_falloff) * ab_h_intensity;
-        colorSum += abBand(vec2(pix.x, res.y - hBar), vec2(1.0, 0.0), vec2(0.0, 1.0), -1.0,
-                           hBlurPx, hDepthPx, lo, hi, fitMin, invFit) * w;
+        colorSum += abProfile(pix.x / res.x, 1.0) * w;
         wSum   += w;
         bright  = max(bright, w);
     }
@@ -267,8 +337,7 @@ vec4 hook()
     if (inLeft)
     {
         float w = abFalloff(vBar - pix.x, vBar, ab_v_falloff) * ab_v_intensity;
-        colorSum += abBand(vec2(vBar, pix.y), vec2(0.0, 1.0), vec2(1.0, 0.0),  1.0,
-                           vBlurPx, vDepthPx, lo, hi, fitMin, invFit) * w;
+        colorSum += abProfile(pix.y / res.y, 2.0) * w;
         wSum   += w;
         bright  = max(bright, w);
     }
@@ -276,8 +345,7 @@ vec4 hook()
     if (inRight)
     {
         float w = abFalloff(pix.x - (res.x - vBar), vBar, ab_v_falloff) * ab_v_intensity;
-        colorSum += abBand(vec2(res.x - vBar, pix.y), vec2(0.0, 1.0), vec2(1.0, 0.0), -1.0,
-                           vBlurPx, vDepthPx, lo, hi, fitMin, invFit) * w;
+        colorSum += abProfile(pix.y / res.y, 3.0) * w;
         wSum   += w;
         bright  = max(bright, w);
     }

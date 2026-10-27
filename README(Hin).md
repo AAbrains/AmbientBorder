@@ -81,8 +81,8 @@ set glsl-shader-opts "ab_intensity=1.15"
 | `ab_v_intensity` | `1` | Left+right light ki brightness (`0` = bars kaale). |
 | `ab_h_falloff` | `1` | `0` = flat fill, `1` = picture edge se window edge tak fade, `2+` = light picture ke paas hi rehti hai. |
 | `ab_v_falloff` | `1` | Wahi, left+right ke liye. |
-| `ab_h_blur` | `5` | Light ka horizontal spread, window width ke %. |
-| `ab_v_blur` | `5` | Light ka vertical spread, window height ke %. |
+| `ab_h_blur` | `5` | Light ka horizontal spread, window width ke %. Chhota rakho (`4`–`8`): profile pehle se perfectly smooth hai, bada blur light ko flat grey fog bana deta hai jo scene se match nahi karta. |
+| `ab_v_blur` | `5` | Light ka vertical spread, window height ke %. `ab_h_blur` jaisa hi rule. |
 | `ab_h_depth` | `2.5` | Picture ke andar kitna deep sample karna, window height ke %. |
 | `ab_v_depth` | `2.5` | Wahi, window width ke %. |
 
@@ -95,8 +95,8 @@ set glsl-shader-opts "ab_intensity=1.15"
 | `ab_dither` | `0.3` | Gradient me banding chhupata hai. |
 | `ab_linear_blur` | `0` | `1` = light ko linear light me average karo. **HDR content ke liye `1`** rakho. |
 | `ab_source_aspect` | `0` | `0` = auto. Anamorphic/odd sources ke liye force karo, jaise `1.7778` ya `2.35`. |
-| `ab_blur_samples` | `12` | Edge ke along taps (zyada = smooth, slow). |
-| `ab_depth_samples` | `4` | Picture ke andar rows (zyada = smooth, slow). |
+| `ab_profile_taps` | `128` | Light profile: edge ke along samples (zyada = smooth). |
+| `ab_profile_rows` | `6` | Light profile: picture ke andar rows (zyada = smooth). |
 
 ### Single-key toggle (`input.conf`)
 

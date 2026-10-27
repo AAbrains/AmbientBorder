@@ -74,8 +74,8 @@ set glsl-shader-opts "ab_intensity=1.15"
 | `ab_v_intensity` | `1` | Left+right light brightness (`0` = black bars). |
 | `ab_h_falloff` | `1` | `0` = flat fill, `1` = fade to window edge, `2+` = hugs the picture closely. |
 | `ab_v_falloff` | `1` | Same, for left+right. |
-| `ab_h_blur` | `5` | Horizontal light spread (% of window width). |
-| `ab_v_blur` | `5` | Vertical light spread (% of window height). |
+| `ab_h_blur` | `5` | Horizontal light spread (% of window width). Keep it small (`4`–`8`): the profile is already perfectly smooth, so a wide blur only washes the light into a flat grey fog that no longer matches the scene. |
+| `ab_v_blur` | `5` | Vertical light spread (% of window height). Same rule as `ab_h_blur`. |
 | `ab_h_depth` | `2.5` | Sample depth inside the picture (% of window height). |
 | `ab_v_depth` | `2.5` | Same, (% of window width). |
 
@@ -88,8 +88,8 @@ set glsl-shader-opts "ab_intensity=1.15"
 | `ab_dither` | `0.3` | Gradient dithering to eliminate banding. |
 | `ab_linear_blur` | `0` | `1` = average light in linear color space. **Recommended `1` for HDR content**. |
 | `ab_source_aspect` | `0` | `0` = auto. Force a specific picture aspect ratio if needed (e.g., `1.7778` or `2.35`). |
-| `ab_blur_samples` | `12` | Taps along the edge (higher = smoother, slower). |
-| `ab_depth_samples` | `4` | Rows inside the picture (higher = smoother, slower). |
+| `ab_profile_taps` | `128` | Light profile: samples along each edge (higher = smoother). |
+| `ab_profile_rows` | `6` | Light profile: rows read into the picture (higher = smoother). |
 
 ### Single-Key Toggle (`input.conf`)
 
