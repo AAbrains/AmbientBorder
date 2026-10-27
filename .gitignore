@@ -1,0 +1,12 @@
+# Backups and local working notes
+/backup/
+/CLAUDE.md
+
+# OS generated files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.tmp
+*.log
+.DS_Store
